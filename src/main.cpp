@@ -14,6 +14,7 @@ using json = nlohmann::json;
 
 vector<string>bot_commands = {"export", "start"};
 string notes_text;
+string notes_text_without_name;
 bool is_notes_export = false;
 
 std::string encodeBase64(const std::string& input) {
@@ -48,8 +49,8 @@ const string githubToken = getenv("GITHUB_TOKEN");
 bool checkFileExistence(const string& book_name);
 
 bool createNewNote(const string& book_name) {
-    std::string encoded_text = encodeBase64(notes_text);
     std::string encoded_name = cpr::util::urlEncode(book_name);
+    std::string encoded_text = encodeBase64("### " + book_name + "  \n" + notes_text_without_name);
     std::string url = "https://api.github.com/repos/" + githubUsername + "/Obsidian_Notes/contents/books/" + encoded_name + ".md";
 
     json request_body;
@@ -74,6 +75,45 @@ bool createNewNote(const string& book_name) {
     } else {
         return false;
     }
+}
+
+bool editNote(const string& book_name) {
+    std::string encoded_name = cpr::util::urlEncode(book_name);
+    std::string url = "https://api.github.com/repos/" + githubUsername + "/Obsidian_Notes/contents/books/" + encoded_name + ".md?ref=main";
+    std::string encoded_text = encodeBase64("### " + book_name + "  \n" + notes_text_without_name);
+
+    cpr::Response r1 = cpr::Get(cpr::Url{url},
+                                cpr::Header{{"Accept", "application/vnd.github+json"},
+                                            {"Authorization", "Bearer " + githubToken},
+                                            {"X-GitHub-Api-Version", "2022-11-28"}},
+                                cpr::VerifySsl{false});
+
+    if (r1.status_code == 404) {
+        return false;
+    }
+
+    json response_json = json::parse(r1.text);
+    std::string sha_value = response_json["sha"];
+
+    json request_body;
+    request_body["message"] = "Edit note";
+    request_body["committer"] = {
+            {"name", "Ivan Gabrusevich"},
+            {"email", "ivan@gabrusevich.ru"}
+    };
+    request_body["content"] = encoded_text;
+    request_body["sha"] = sha_value;
+
+    std::string request_body_string = request_body.dump();
+
+    cpr::Response r2 = cpr::Put(cpr::Url{url},
+                                cpr::Header{{"Accept", "application/vnd.github+json"},
+                                            {"Authorization", "Bearer " + githubToken},
+                                            {"X-GitHub-Api-Version", "2022-11-28"}},
+                                cpr::Body{request_body_string},
+                                cpr::VerifySsl{false});
+
+    return true;
 }
 
 bool checkFileExistence(const string& book_name) {
@@ -106,11 +146,17 @@ void saveUserText(Bot &bot, Message::Ptr message) {
     string book_name;
     size_t space_pos = notes_text.find_first_of(' ');
     string first_word = notes_text.substr(0, space_pos);
+    notes_text_without_name = notes_text.substr(space_pos, notes_text.length());
     std::replace(first_word.begin(), first_word.end(), '_', ' ');
     book_name = first_word;
 
     if (checkFileExistence(book_name)) {
         bot.getApi().sendMessage(message->chat->id, "Book already exist");
+        if (editNote(book_name)) {
+            bot.getApi().sendMessage(message->chat->id, "Note edited");
+        } else {
+            bot.getApi().sendMessage(message->chat->id, "Error");
+        }
     } else {
         bot.getApi().sendMessage(message->chat->id, "Book does not exist");
         if (createNewNote(book_name)) {
@@ -135,6 +181,11 @@ int main() {
 
     bot.getEvents().onCommand("start", [&bot, &keyboard](Message::Ptr message) {
         bot.getApi().sendMessage(message->chat->id, "Hi!", false, 0, keyboard);
+    });
+
+    bot.getEvents().onCommand("export", [&bot](Message::Ptr message) {
+       bot.getApi().sendMessage(message->chat->id, "Send your text");
+       is_notes_export = true;
     });
 
     bot.getEvents().onCallbackQuery([&bot](CallbackQuery::Ptr query) {
